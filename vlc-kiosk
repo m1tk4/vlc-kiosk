@@ -20,19 +20,22 @@ function kiosk_run() {
         (
             exec 1> >(logger -t $ME-player) 2>&1
             while true; do
-            echo "Starting VLC player..."
-            $CHRT -r 20 /usr/bin/vlc \
-                --repeat --fullscreen --no-video-title-show --quiet-synchro --no-qt-fs-controller --disable-screensaver \
-                udp://@:$UDP_PORT \
-                --extraintf rc --rc-host localhost:$VLC_RC_PORT
+                echo "Starting VLC player..."
+                $CHRT -r 20 /usr/bin/vlc \
+                    --repeat --fullscreen --no-video-title-show --quiet-synchro --no-qt-fs-controller --disable-screensaver \
+                    udp://@:$UDP_PORT \
+                    --extraintf rc --rc-host localhost:$VLC_RC_PORT
+                sleep 2
             done
         ) &
 
         # Send all stdio/err to logging
         exec 1> >(logger -t $ME-tsp) 2>&1
         while true; do
-            /usr/bin/tsp -I srt $1 --latency 2000 --streamid $2 -O ip 127.0.0.1:$UDP_PORT
-            sleep 2
+            /usr/bin/tsp \
+                -I srt $1 --latency 2000 --streamid $2 \
+                -O ip 127.0.0.1:$UDP_PORT
+            sleep 1
             echo "Restarting receiver..."
         done
     )
@@ -154,7 +157,7 @@ function kiosk_status() {
         exit 0
     fi
     
-    
+    # TODO: This needs to be done actually!
     echo everything is ok.
 }
 
@@ -170,22 +173,26 @@ AUTOSTART=~/.config/autostart/$ME.desktop
 UDP_PORT=9384
 VLC_RC_PORT=9385
 
-
 # Some sanity checks
 [ "$(whoami)" == "root" ] && { echo "ERROR: You should not run $ME as root."; exit 1; }
 
 case $1 in
+
     run|install|remove|stop|status)
         _assert_prerequisites
         _assert_chrt_helper
         kiosk_$1 $2 $3
         ;;
+
     help|*)
         kiosk_help
         ;;
 esac
 
 
-
+# TODO: IMPORTANT! https://unix.stackexchange.com/questions/114643/chrt-failed-to-set-pid-xxxs-policy-on-one-machine-but-not-others
+# sysctl -w kernel.sched_rt_runtime_us=-1
+# also https://stackoverflow.com/questions/7722318/proc-in-linux-does-values-modified-persist-after-reboot
+# TODO: status and other telnet things should bypass GNOME check, they may be done through ssh
 
 
