@@ -1,0 +1,140 @@
+#!/bin/bash
+
+function kiosk_run() {
+
+    [ "$2" == "" ] && kiosk_help
+
+    # Need to create a new process group, otherwise it gets GNOME process group and it is
+    # hard to kill all the processes separately from your entire GNOME Session
+    set -m
+    (
+        # Make sure we kill all child processes when we die
+        trap 'kill 0' EXIT
+
+        jobs -p
+
+        # Save our PID - note, $$ is the main bash file, $BASHPID is the current subshell!
+        echo $BASHPID >$PIDFILE
+
+        # Loop and restart VLC just in case it crashes
+        (
+            exec 1> >(logger -t $ME-player) 2>&1
+            while true; do
+            echo "Starting VLC player..."
+            /usr/bin/vlc --repeat --fullscreen --no-video-title-show --quiet-synchro --no-qt-fs-controller --disable-screensaver udp://@:5555
+            done
+        ) &
+
+        # Send all stdio/err to logging
+        exec 1> >(logger -t $ME-tsp) 2>&1
+        while true; do
+            /usr/bin/tsp -I srt $1 --latency 2000 --streamid $2 -O ip 127.0.0.1:5555
+            sleep 2
+            echo "Restarting receiver..."
+        done
+    )
+    rm -f $PIDFILE
+
+}
+
+
+# Install GNOME autostart
+function kiosk_install() {
+
+    [ "$2" == "" ] && kiosk_help
+
+    # Check pre-requisites
+    which vlc >/dev/null 2>&1 || { echo ERROR: VLC is missing!; ERR=1; }
+    which tsp >/dev/null || { echo ERROR: TSDuck is missing!; ERR=1; }
+    [ "$XDG_CURRENT_DESKTOP" == "GNOME" ] || { echo ERROR: GNOME Desktop environment is not found!; ERR=1; }
+    if [ "$ERR" == "1" ]; then
+        exit 1
+    fi
+
+    # Everything looks good, install
+    cat <<EOF >$AUTOSTARTFILE
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$ME
+Exec=$(realpath $0) run $1 $2
+Terminal=false
+EOF
+
+    cat <<EOF 
+$ME installed successfully. Enable autologin for the user '$(whoami)' - either through
+GNOME Settings / Users, or by adding:
+
+[daemon]
+AutomaticLoginEnable=True
+AutomaticLogin=$(whoami)
+
+to /etc/gdm/custom.conf to automatically login and play the live source on boot.
+
+EOF
+}
+
+# Stops running player
+function kiosk_stop() {
+
+    # Killing the whole process group!
+    if [ -f $PIDFILE ]; then
+        kill -s SIGINT -`cat $PIDFILE`
+        rm -f $PIDFILE
+    fi
+}
+
+# Remove GNOME autostart
+function kiosk_remove() {
+    kiosk_stop
+    [ -f $AUTOSTARTFILE ] && rm -f $AUTOSTARTFILE && echo "$ME successfully uninstalled"
+}
+
+# Print usage and quit
+function kiosk_help() {
+    
+    cat << EOF
+Usage:
+
+    $ME install <MediaServerIP:SRTPort> <StreamID>
+        creates a Gnome autostart application that runs $ME on user login
+
+    $ME remove
+        uninstalls $ME
+
+    $ME run <MediaServerIP:SRTPort> <StreamID>
+        plays the SRT source fullscreen using VLC
+
+    $ME stop
+        stops currently running playback
+
+
+EOF
+exit 1
+}
+
+
+#
+#   Main
+###
+
+ME=$(basename $0)
+PIDFILE=~/.$ME.pid
+AUTOSTARTFILE=~/.config/autostart/$ME.desktop
+
+# Some sanity checks
+[ "$(whoami)" == "root" ] && { echo "ERROR: You should not run this tool as root user."; exit 1; }
+
+case $1 in
+    run|install|remove|stop)
+        kiosk_$1 $2 $3
+        ;;
+    help|*)
+        kiosk_help
+        ;;
+esac
+
+
+
+
+
