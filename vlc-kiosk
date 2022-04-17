@@ -14,26 +14,29 @@ function kiosk_run() {
         jobs -p
 
         # Save our PID - note, $$ is the main bash file, $BASHPID is the current subshell!
-        echo $BASHPID >$PIDFILE
+        echo $BASHPID >$PID_FILE
 
         # Loop and restart VLC just in case it crashes
         (
             exec 1> >(logger -t $ME-player) 2>&1
             while true; do
             echo "Starting VLC player..."
-            /usr/bin/vlc --repeat --fullscreen --no-video-title-show --quiet-synchro --no-qt-fs-controller --disable-screensaver udp://@:5555
+            $CHRT -r 20 /usr/bin/vlc \
+                --repeat --fullscreen --no-video-title-show --quiet-synchro --no-qt-fs-controller --disable-screensaver \
+                udp://@:$UDP_PORT \
+                --extraintf rc --rc-host localhost:$VLC_RC_PORT
             done
         ) &
 
         # Send all stdio/err to logging
         exec 1> >(logger -t $ME-tsp) 2>&1
         while true; do
-            /usr/bin/tsp -I srt $1 --latency 2000 --streamid $2 -O ip 127.0.0.1:5555
+            /usr/bin/tsp -I srt $1 --latency 2000 --streamid $2 -O ip 127.0.0.1:$UDP_PORT
             sleep 2
             echo "Restarting receiver..."
         done
     )
-    rm -f $PIDFILE
+    rm -f $PID_FILE
 
 }
 
@@ -43,16 +46,8 @@ function kiosk_install() {
 
     [ "$2" == "" ] && kiosk_help
 
-    # Check pre-requisites
-    which vlc >/dev/null 2>&1 || { echo ERROR: VLC is missing!; ERR=1; }
-    which tsp >/dev/null || { echo ERROR: TSDuck is missing!; ERR=1; }
-    [ "$XDG_CURRENT_DESKTOP" == "GNOME" ] || { echo ERROR: GNOME Desktop environment is not found!; ERR=1; }
-    if [ "$ERR" == "1" ]; then
-        exit 1
-    fi
-
     # Everything looks good, install
-    cat <<EOF >$AUTOSTARTFILE
+    cat <<EOF >$AUTOSTART
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -78,17 +73,53 @@ EOF
 function kiosk_stop() {
 
     # Killing the whole process group!
-    if [ -f $PIDFILE ]; then
-        kill -s SIGINT -`cat $PIDFILE`
-        rm -f $PIDFILE
+    if [ -f $PID_FILE ]; then
+        kill -s SIGINT -`cat $PID_FILE`
+        rm -f $PID_FILE
     fi
 }
 
 # Remove GNOME autostart
 function kiosk_remove() {
     kiosk_stop
-    [ -f $AUTOSTARTFILE ] && rm -f $AUTOSTARTFILE && echo "$ME successfully uninstalled"
+    [ -f $AUTOSTART ] && rm -f $AUTOSTART && echo "$ME successfully uninstalled"
 }
+
+# Checks that we have VLC, TSDuck and other things
+function _assert_prerequisites() {
+
+    # Check pre-requisites
+    which vlc >/dev/null 2>&1 || { echo ERROR: VLC is missing!; ERR=1; }
+    which tsp >/dev/null || { echo ERROR: TSDuck is missing! Check out https://tsduck.io/download/tsduck/ ; ERR=1; }
+    [ "$XDG_CURRENT_DESKTOP" == "GNOME" ] || { echo ERROR: GNOME Desktop environment is not found!; ERR=1; }
+    if [ "$ERR" == "1" ]; then
+        exit 1
+    fi
+}
+
+# Ensures we can either chrt processes directly or have a helper executable to do so
+function _assert_chrt_helper() {
+
+    if [[ -x $CHRT && "`getcap $CHRT 2>&1`" == *cap_sys_nice* ]]; then
+        return        
+    fi
+
+    cp `which chrt` $CHRT
+    echo "$ME needs to be able to change priority and scheduling for VLC"
+    echo "player. It is going to use a helper chrt executable that needs"
+    echo "CAP_SYS_NICE capabilities. Enter your root password below -"
+    echo "(this only needs to be done once"
+    su -m -p -c "setcap cap_sys_nice=ep $CHRT" || exit 1
+    
+    echo The helper executable created as follows:
+    getcap $CHRT
+    #sudo getcap $$ 2>&1 | grep cap_sys_nice 
+    #>/dev/null && { echo have it!; exit; }
+    #echo dont have it
+
+}
+
+
 
 # Print usage and quit
 function kiosk_help() {
@@ -108,9 +139,23 @@ Usage:
     $ME stop
         stops currently running playback
 
+    $ME status
+        shows current stats for video player, video delivery, etc.
 
 EOF
 exit 1
+}
+
+# Shows current status
+function kiosk_status() {
+    
+    if [ ! -f $PID_FILE ]; then
+        echo $ME is not running.
+        exit 0
+    fi
+    
+    
+    echo everything is ok.
 }
 
 
@@ -119,14 +164,20 @@ exit 1
 ###
 
 ME=$(basename $0)
-PIDFILE=~/.$ME.pid
-AUTOSTARTFILE=~/.config/autostart/$ME.desktop
+PID_FILE=~/.$ME.pid
+CHRT=$(realpath $0).chrt
+AUTOSTART=~/.config/autostart/$ME.desktop
+UDP_PORT=9384
+VLC_RC_PORT=9385
+
 
 # Some sanity checks
-[ "$(whoami)" == "root" ] && { echo "ERROR: You should not run this tool as root user."; exit 1; }
+[ "$(whoami)" == "root" ] && { echo "ERROR: You should not run $ME as root."; exit 1; }
 
 case $1 in
-    run|install|remove|stop)
+    run|install|remove|stop|status)
+        _assert_prerequisites
+        _assert_chrt_helper
         kiosk_$1 $2 $3
         ;;
     help|*)
