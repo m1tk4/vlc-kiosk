@@ -3,6 +3,7 @@
 function kiosk_run() {
 
     [ "$2" == "" ] && kiosk_help
+    _assert_gnome
 
     # Need to create a new process group, otherwise it gets GNOME process group and it is
     # hard to kill all the processes separately from your entire GNOME Session
@@ -88,13 +89,17 @@ function kiosk_remove() {
     [ -f $AUTOSTART ] && rm -f $AUTOSTART && echo "$ME successfully uninstalled"
 }
 
+# Checks that we are running in GNOME
+function _assert_gnome() {
+    [ "$XDG_CURRENT_DESKTOP" == "GNOME" ] || { echo ERROR: GNOME Desktop environment is not found!; ERR=1; }
+}
+
 # Checks that we have VLC, TSDuck and other things
 function _assert_prerequisites() {
 
     # Check pre-requisites
     which vlc >/dev/null 2>&1 || { echo ERROR: VLC is missing!; ERR=1; }
     which tsp >/dev/null || { echo ERROR: TSDuck is missing! Check out https://tsduck.io/download/tsduck/ ; ERR=1; }
-    [ "$XDG_CURRENT_DESKTOP" == "GNOME" ] || { echo ERROR: GNOME Desktop environment is not found!; ERR=1; }
     if [ "$ERR" == "1" ]; then
         exit 1
     fi
@@ -110,15 +115,13 @@ function _assert_chrt_helper() {
     cp `which chrt` $CHRT
     echo "$ME needs to be able to change priority and scheduling for VLC"
     echo "player. It is going to use a helper chrt executable that needs"
-    echo "CAP_SYS_NICE capabilities. Enter your root password below -"
-    echo "(this only needs to be done once"
-    su -m -p -c "setcap cap_sys_nice=ep $CHRT" || exit 1
+    echo "CAP_SYS_NICE capabilities. It will also set the kernel option"
+    echo "kernel.sched_rt_runtime_us to -1. Please enter your root password"
+    echo "below - this only needs to be done once"
+    su -m -p -c "setcap cap_sys_nice=ep $CHRT; echo 'kernel.sched_rt_runtime_us = -1' >$SYSCTL_CONF; sysctl -w kernel.sched_rt_runtime_us=-1" || exit 1
     
     echo The helper executable created as follows:
     getcap $CHRT
-    #sudo getcap $$ 2>&1 | grep cap_sys_nice 
-    #>/dev/null && { echo have it!; exit; }
-    #echo dont have it
 
 }
 
@@ -169,6 +172,7 @@ function kiosk_status() {
 ME=$(basename $0)
 PID_FILE=~/.$ME.pid
 CHRT=$(realpath $0).chrt
+SYSCTL_CONF=/etc/sysctl.d/99-$ME.conf
 AUTOSTART=~/.config/autostart/$ME.desktop
 UDP_PORT=9384
 VLC_RC_PORT=9385
@@ -188,11 +192,3 @@ case $1 in
         kiosk_help
         ;;
 esac
-
-
-# TODO: IMPORTANT! https://unix.stackexchange.com/questions/114643/chrt-failed-to-set-pid-xxxs-policy-on-one-machine-but-not-others
-# sysctl -w kernel.sched_rt_runtime_us=-1
-# also https://stackoverflow.com/questions/7722318/proc-in-linux-does-values-modified-persist-after-reboot
-# TODO: status and other telnet things should bypass GNOME check, they may be done through ssh
-
-
