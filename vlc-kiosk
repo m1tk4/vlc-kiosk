@@ -1,43 +1,52 @@
 #!/bin/bash
 
+#
+#   vlc-kiosk
+#   https://github.com/m1tk4/vlc-kiosk
+#
+#   Unattended and resilient VLC player with SRT TS/IP source
+#
+
+# Run VLC and TSDuck, restart them if they fail
 function kiosk_run() {
 
     [ "$2" == "" ] && kiosk_help
     _assert_gnome
 
-    # Need to create a new process group, otherwise it gets GNOME process group and it is
+    # Need to create a new process group, otherwise it gets GNOME process group ID and it is
     # hard to kill all the processes separately from your entire GNOME Session
     set -m
     (
         # Make sure we kill all child processes when we die
         trap 'kill 0' EXIT
 
-        jobs -p
-
         # Save our PID - note, $$ is the main bash file, $BASHPID is the current subshell!
         echo $BASHPID >$PID_FILE
 
         # Loop and restart VLC just in case it crashes
         (
+            # Send all stdio/err to logging
             exec 1> >(logger -t $ME-player) 2>&1
+            echo "Starting VLC player..."
             while true; do
-                echo "Starting VLC player..."
                 $CHRT -r 20 /usr/bin/vlc \
                     --repeat --fullscreen --no-video-title-show --quiet-synchro --no-qt-fs-controller --disable-screensaver \
                     udp://@:$UDP_PORT \
                     --extraintf rc --rc-host localhost:$VLC_RC_PORT
                 sleep 2
+                echo "restarting VLC"
             done
         ) &
 
-        # Send all stdio/err to logging
+        # Loop and restart TSP to receive the transport stream
         exec 1> >(logger -t $ME-tsp) 2>&1
+        echo "Starting TSDuck to receive srt://$1/?streamid=$2 :"
         while true; do
             /usr/bin/tsp \
                 -I srt $1 --latency 2000 --streamid $2 \
                 -O ip 127.0.0.1:$UDP_PORT
             sleep 1
-            echo "Restarting receiver..."
+            echo "restarting tsp"
         done
     )
     rm -f $PID_FILE
@@ -125,19 +134,11 @@ function _assert_chrt_helper() {
 
 }
 
-
-
 # Print usage and quit
 function kiosk_help() {
     
     cat << EOF
 Usage:
-
-    $ME install <MediaServerIP:SRTPort> <StreamID>
-        creates a Gnome autostart application that runs $ME on user login
-
-    $ME remove
-        uninstalls $ME
 
     $ME run <MediaServerIP:SRTPort> <StreamID>
         plays the SRT source fullscreen using VLC
@@ -145,23 +146,52 @@ Usage:
     $ME stop
         stops currently running playback
 
+    $ME install <MediaServerIP:SRTPort> <StreamID>
+        creates a Gnome autostart application that runs $ME on user login
+
+    $ME remove
+        uninstalls $ME
+
     $ME status
         shows current stats for video player, video delivery, etc.
+
+    $ME shell [command [parameters]]
+        executes VLC RC shell command, or provides interactive shell
+        if no command specified
 
 EOF
 exit 1
 }
 
-# Shows current status
-function kiosk_status() {
-    
+# Checks that the kiosk is running
+function _assert_running() {
     if [ ! -f $PID_FILE ]; then
         echo $ME is not running.
-        exit 0
+        exit 1
     fi
-    
-    # TODO: This needs to be done actually!
-    echo everything is ok.
+}
+
+# Shows current status
+function kiosk_status() {
+    while true; do
+        clear
+        kiosk_shell stats
+        sleep 3
+    done
+}
+
+# Routes commands to VLC RC shell
+function kiosk_shell() {
+
+    _assert_running
+    netstat -tlpn 2>/dev/null | grep :$VLC_RC_PORT.*vlc >/dev/null || { echo "VLC does not seem to be listening on port $VLC_RC_PORT."; exit 1; }
+
+    if [ "$1" != "" ]; then
+        # there are some parameters, run them
+        echo "$1 $2" | nc localhost $VLC_RC_PORT
+    else 
+        nc localhost $VLC_RC_PORT
+    fi
 }
 
 
@@ -182,10 +212,14 @@ VLC_RC_PORT=9385
 
 case $1 in
 
-    run|install|remove|stop|status)
+    run|install)
         _assert_prerequisites
         _assert_chrt_helper
         kiosk_$1 $2 $3
+        ;;
+
+    status|remove|stop|shell)
+        kiosk_$1 $2 $3 $4 $5 $6 $7
         ;;
 
     help|*)
