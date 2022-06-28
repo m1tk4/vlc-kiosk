@@ -29,6 +29,9 @@ function kiosk_run() {
             exec 1> >(logger -t $ME-player) 2>&1
             echo "Starting VLC player..."
             while true; do
+                # Make sure we output audio to HDMI and not on-board analog audio device
+                pactl set-card-profile 0 output:hdmi-stereo
+                # Start the VLC at higher than normal prio
                 $CHRT -r 20 /usr/bin/vlc \
                     --repeat --fullscreen --no-video-title-show --quiet-synchro --no-qt-fs-controller --disable-screensaver \
                     udp://@:$UDP_PORT \
